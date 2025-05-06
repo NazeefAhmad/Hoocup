@@ -39,22 +39,19 @@ class EllaChatbot:
 
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🟢 Chatbot instance created")
 
-        #print("🟢 Chatbot instance created")
-
+        # Initialize Pinecone index
         if self.index_name not in pc.list_indexes().names():
             pc.create_index(
                 name=self.index_name,
                 dimension=1536,
                 metric="cosine",
-                spec=ServerlessSpec(cloud="aws", region="us-east-1")
+                cloud="aws",
+                region="us-east-1"
             )
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🟢 Created Pinecone index: ")
-
-            print(f"🟢 Created Pinecone index: {self.index_name}")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🟢 Created Pinecone index: {self.index_name}")
+        
         self.index = pc.Index(self.index_name)
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🟢  Pinecone index: ")
-
-        print(f"🟢 Pinecone index loaded: {self.index_name}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🟢 Pinecone index loaded: {self.index_name}")
 
     def embed_text(self, text):
         if text in self.embedding_cache:  # Use self.embedding_cache instead of global
