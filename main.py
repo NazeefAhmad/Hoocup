@@ -62,9 +62,53 @@ async def root():
         "endpoints": {
             "health": "/health",
             "users": "/users",
-            "chat": "/chat"
+            "chat": {
+                "create_session": "/chat/{user_id}",
+                "send_message": "/chat/{chat_id}/message",
+                "get_history": "/chat/{chat_id}/history",
+                "test_chat": "/chat/test"  # New test endpoint
+            }
         }
     }
+
+# Test chat endpoint
+@app.post("/chat/test")
+async def test_chat(message: Message):
+    try:
+        # Create a test user if not exists
+        test_user_id = "test-user-123"
+        if not db.get_user(test_user_id):
+            db.create_user({
+                "name": "Test User",
+                "email": "test@example.com",
+                "phone": "1234567890",
+                "age": 25,
+                "gender": "other",
+                "preferences": {"loves": [], "dislikes": [], "interests": []}
+            })
+        
+        # Create a chat session
+        chat_result = db.create_chat_session(test_user_id)
+        chat_id = str(chat_result.inserted_id)
+        
+        # Get chatbot response
+        bot_response = chatbot.get_response(chat_id, message.content)
+        
+        # Store messages
+        db.add_message(chat_id, message.dict())
+        db.add_message(chat_id, {
+            "content": bot_response,
+            "is_user": False,
+            "emotion": chatbot.emotion_handler.detect_emotion(bot_response)
+        })
+        
+        return {
+            "chat_id": chat_id,
+            "user_message": message.content,
+            "bot_response": bot_response
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Pydantic models for request/response
 class UserCreate(BaseModel):
