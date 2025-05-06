@@ -1,7 +1,7 @@
 import openai
 import os
 from dotenv import load_dotenv
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
 import time
 import uuid
 import random
