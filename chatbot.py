@@ -45,8 +45,12 @@ class EllaChatbot:
                 name=self.index_name,
                 dimension=1536,
                 metric="cosine",
-                cloud="aws",
-                region="us-east-1"
+                spec={
+                    "serverless": {
+                        "cloud": "aws",
+                        "region": "us-east-1"
+                    }
+                }
             )
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🟢 Created Pinecone index: {self.index_name}")
         
