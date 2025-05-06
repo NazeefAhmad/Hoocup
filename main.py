@@ -25,9 +25,46 @@ from typing import List, Optional
 from datetime import datetime
 import db
 from chatbot import EllaChatbot
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Chatbot API")
 chatbot = EllaChatbot()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "services": {
+            "pinecone": "connected",
+            "openai": "connected",
+            "mongodb": "connected"
+        }
+    }
+
+# Root endpoint
+@app.get("/")
+async def root():
+    return {
+        "message": "Caroline Chatbot API is running!",
+        "version": "1.0.0",
+        "endpoints": {
+            "health": "/health",
+            "users": "/users",
+            "chat": "/chat"
+        }
+    }
 
 # Pydantic models for request/response
 class UserCreate(BaseModel):
@@ -99,7 +136,3 @@ async def get_chat_history(chat_id: str, limit: int = 50):
     if not history:
         raise HTTPException(status_code=404, detail="Chat history not found")
     return history
-
-@app.get("/")
-def root():
-    return {"message": "Caroline Chatbot API is running!"}
