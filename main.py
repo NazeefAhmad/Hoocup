@@ -40,6 +40,24 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
+# Pydantic models for request/response
+class UserCreate(BaseModel):
+    name: str
+    email: EmailStr
+    phone: str
+    age: int
+    gender: str
+    preferences: Optional[dict] = {"loves": [], "dislikes": [], "interests": []}
+
+class Message(BaseModel):
+    content: str
+    is_user: bool = True
+    emotion: Optional[str] = None
+
+class ChatSession(BaseModel):
+    user_id: str
+    messages: List[Message]
+
 # Health check endpoint
 @app.get("/health")
 async def health_check():
@@ -109,24 +127,6 @@ async def test_chat(message: Message):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-# Pydantic models for request/response
-class UserCreate(BaseModel):
-    name: str
-    email: EmailStr
-    phone: str
-    age: int
-    gender: str
-    preferences: Optional[dict] = {"loves": [], "dislikes": [], "interests": []}
-
-class Message(BaseModel):
-    content: str
-    is_user: bool = True
-    emotion: Optional[str] = None
-
-class ChatSession(BaseModel):
-    user_id: str
-    messages: List[Message]
 
 # User endpoints
 @app.post("/users/")
