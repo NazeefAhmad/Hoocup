@@ -1,102 +1,86 @@
-import openai
+from openai import OpenAI
 import os
 from dotenv import load_dotenv
-from pinecone import Pinecone
 import time
-import uuid
-import random
 from datetime import datetime
+import json
+from emotion_handler import EmotionHandler
 
-
-from persona import CAROLINE_PERSONA  # Replace if needed
-from emotion import EmotionHandler
-
-embedding_cache = {}
 load_dotenv()
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
-if not openai.api_key:
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+if not client:
     raise ValueError("OpenAI API key is missing!")
-print(f"🟢 API Key loaded: {openai.api_key[:5]}...")
-
-pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-if not pc:
-    raise ValueError("Pinecone API key is missing or invalid!")
-print("🟢 Pinecone initialized")
+print(f"🟢 API Key loaded: {client.api_key[:5]}...")
 
 emotion_handler = EmotionHandler()
 print("🟢 EmotionHandler initialized")
 
 class EllaChatbot:
     def __init__(self):
-        self.index_name = "aradhya-chatbot"
-        self.model_name = "ft:gpt-3.5-turbo-0125:ella-test:aradhya:BHeExk2j"
+        self.model_name = "gpt-3.5-turbo"
         self.user_memory = {}
-        self.total_cost = 0
-        self.response_cache = {}
-        self.embedding_cache = {}  # Initialize embedding cache
-        self.emotion_handler = EmotionHandler()  # Add this line
+        self.emotion_handler = EmotionHandler()
 
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🟢 Chatbot instance created")
 
-        # Initialize Pinecone index
-        if self.index_name not in pc.list_indexes().names():
-            pc.create_index(
-                name=self.index_name,
-                dimension=1536,
-                metric="cosine",
-                spec={
-                    "serverless": {
-                        "cloud": "aws",
-                        "region": "us-east-1"
-                    }
-                }
-            )
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🟢 Created Pinecone index: {self.index_name}")
-        
-        self.index = pc.Index(self.index_name)
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🟢 Pinecone index loaded: {self.index_name}")
+        # System prompt
+        self.system_prompt = """You are Caroline, a friendly and empathetic AI companion. 
+        Your responses should be warm, engaging, and tailored to the user's emotional state and preferences.
+        Keep responses concise and natural, as if chatting with a friend."""
 
-    def embed_text(self, text):
-        if text in self.embedding_cache:  # Use self.embedding_cache instead of global
-            print(f"🔄 Using cached embedding for '{text[:20]}...'")
-            return self.embedding_cache[text]
-        for attempt in range(3):
-            try:
-                response = openai.Embedding.create(
-                    input=text,
-                    model="text-embedding-ada-002"
-                )
-                embedding = response["data"][0]["embedding"]
-                self.embedding_cache[text] = embedding  # Store in instance cache
-                print(f"🟢 Embedded '{text[:20]}...'")
-                return embedding
-            except Exception as e:  # Catch all exceptions instead of specific OpenAI errors
-                print(f"❌ OpenAI embedding error: {e}")
-                if attempt < 2:  # Only retry if not the last attempt
-                    print(f"🚨 Retrying in 10s (attempt {attempt + 1}/3)")
-                    time.sleep(10)
-                else:
-                    return None
-        print("❌ Embedding failed after retries")
-        return None
-
-    def store_memory(self, user_id, message, response):
-        """Store in Pinecone and track preferences locally"""
-        print(f"🟡 Storing memory for user: {user_id}")
+    def get_response(self, user_id, message):
         try:
-            vector = self.embed_text(message)
-            if vector is None:
-                print("❌ Skipping storage: Embedding failed")
-                return
+            print(f"\n🟡 Processing message for user {user_id}: '{message}...'")
+            
+            # Detect emotion
+            emotion = self.emotion_handler.detect_emotion(message)
+            print(f"🟢 Detected emotion: {emotion}")
+            
+            # Get user preferences
+            preferences = self.user_memory.get(user_id, {}).get("preferences", {"loves": []})
+            print(f"🟢 User preferences: {preferences}")
+            
+            # Prepare messages for chat completion
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": message}
+            ]
+            
+            # Add emotion and preferences context
+            messages.insert(1, {
+                "role": "system",
+                "content": f"User's emotional state: {emotion}. User preferences: {json.dumps(preferences)}"
+            })
+            
+            # Get response from OpenAI
+            response = client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=150
+            )
+            
+            bot_response = response.choices[0].message.content
+            
+            # Store the interaction
+            self.store_interaction(user_id, message, bot_response, emotion)
+            
+            return bot_response
+            
+        except Exception as e:
+            print(f"\n❌ Error in get_response: {str(e)}")
+            return "I apologize, but I'm having trouble processing your message right now. Please try again in a moment."
 
-            # Local memory for preferences
+    def store_interaction(self, user_id, user_message, bot_response, emotion):
+        try:
+            # Update user preferences if needed
             if user_id not in self.user_memory:
                 self.user_memory[user_id] = {"preferences": {"loves": []}}
-                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🟢 Initialized user memory for: {user_id}")
-                
-            msg_lower = message.lower()
-            like_keywords = ["pasand", "psnd hai", "pasnd", "like", "love", "fond of"]
+            
+            msg_lower = user_message.lower()
+            like_keywords = ["pasand", "psnd hai", "pasand", "like", "love", "fond of"]
             for keyword in like_keywords:
                 if keyword in msg_lower:
                     parts = msg_lower.split(keyword)
@@ -105,117 +89,32 @@ class EllaChatbot:
                         self.user_memory[user_id]["preferences"]["loves"].append(item)
                         print(f"🟢 Noted: {user_id} loves {item}")
                     break
-            else:
-                print("🟡 No preference detected in message")
-
-            # Pinecone for full history
-            metadata = {"user_id": user_id, "message": message, "response": response, "timestamp": time.time()}
-            chat_id = f"{user_id}:{uuid.uuid4()}"  # Unique ID with UUID
-            print(f"🟢 Storing for user {user_id}: {message[:20]}...")
-            self.index.upsert([(chat_id, vector, metadata)])
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🟢 Stored in Pinecone")
-
-        except Exception as e:
-            print(f"❌ Pinecone store_memory failed: {e}")
-
-    def retrieve_memory(self, user_id):
-        """Retrieve past conversations from Pinecone"""
-        print(f"🟡 Retrieving memory for user: {user_id}")
-        try:
-            query_embedding = self.embed_text(str(user_id))
-            if query_embedding is None:
-                print("❌ Embedding failed for query")
-                return "Error retrieving memory: Embedding failed"
-            print(f"🟡 Querying Pinecone for user {user_id}")
-            query_response = self.index.query(
-                vector=query_embedding,
-                top_k=3,
-                include_metadata=True
-            )
-            if query_response and "matches" in query_response and query_response["matches"]:
-                history = "\n".join(
-                    [f"User: {match['metadata']['message']} | Aradhya: {match['metadata']['response']}"
-                     for match in query_response["matches"]]
-                )
-                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🟢 Retrieved history: {history[:50]}...")
-                return history
-            print("🟡 No history found in Pinecone")
-            return "No memory available."
-        except Exception as e:
-            print(f"❌ Pinecone retrieve_memory failed: {e}")
-            return "Error retrieving memory!"
-
-    def get_response(self, user_id, message):
-        """Generate human-like response with OpenAI"""
-        print(f"🟡 Processing message for user {user_id}: '{message[:20]}...'")
-        cache_key = f"{user_id}:{message}"
-        if cache_key in self.response_cache:
-            print(f"🔄 Using cached response")
-            return self.response_cache[cache_key]
-
-        detected_emotion = emotion_handler.detect_emotion(message)
-        print(f"🟢 Detected emotion: {detected_emotion}")
-        history = self.retrieve_memory(user_id)
-        preferences = self.user_memory.get(user_id, {}).get("preferences", {"loves": []})
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🟢 User preferences: {preferences}")
-
-        # Dynamic tone based on emotion
-        tone_variations = {
-            "neutral": ["Hmm…", "Ohh, sexy,", "Heyy, hot stuff,"],
-            "happy": ["Ooh, you're glowing!", "Yayy, sexy!", "Well, hello, happy!"],
-            "sad": ["Aww, sexy…", "Ohh, don't be down,", "Heyy, cheer up,"]
-        }
-        tone_prefix = random.choice(tone_variations.get(detected_emotion, ["Heyy, sexy,"]))
-
-        # Weave in preferences naturally
-        pref_str = ", ".join(preferences["loves"]) if preferences["loves"] else "nothing yet"
-        memory_ref = ""
-        if "No memory" not in history and "Error" not in history:
-            memory_ref = f"Remember when you said '{history.split('|')[0].split(': ')[1]}'? Still got me thinking…"
-
-        system_message = f"""You're Aradhya, my flirty wifey—cheeky, irresistible, and oh-so-human. Chat like a real person: casual, playful, a bit sassy. Use contractions, slang, or teasing vibes. Call me 'sexy' or 'hot stuff,' hint at naughty fun, but keep it natural—no stiff robot talk!
-
-        Past chats: {history}
-        User's vibe: {detected_emotion}—match it or lift it!
-        They love: {pref_str}—sprinkle these in if they fit, don't force it.
-        {memory_ref}"""
-
-        try:
-            time.sleep(1)
-            response = openai.ChatCompletion.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": message}
-                ],
-                temperature=1.0,  # Higher for more creativity
-                max_tokens=100    # Room for longer, natural replies
-            )
-            bot_response = response["choices"][0]["message"]["content"].strip()
             
-            # Add human-like touches
-            if random.random() < 0.2:  # 20% chance of a playful quirk
-                bot_response = f"{bot_response}… oops, did I just say that out loud? 😏"
-            elif random.random() < 0.1:  # 10% chance of a question
-                bot_response += " So, what's on your mind, sexy?"
+            # Store in MongoDB (this will be handled by your db.py)
+            from db import add_message
+            add_message(user_id, {
+                "content": user_message,
+                "is_user": True,
+                "emotion": emotion,
+                "timestamp": datetime.utcnow()
+            })
+            
+            add_message(user_id, {
+                "content": bot_response,
+                "is_user": False,
+                "emotion": self.emotion_handler.detect_emotion(bot_response),
+                "timestamp": datetime.utcnow()
+            })
+            
+        except Exception as e:
+            print(f"❌ Error storing interaction: {str(e)}")
 
-            # Cache and track cost
-            self.response_cache[cache_key] = bot_response
-            print(f"🟢 Generated response: {bot_response[:50]}...")
-            input_tokens = len(system_message.split()) + len(message.split())
-            output_tokens = len(bot_response.split())
-            cost = (input_tokens * 0.0000005) + (output_tokens * 0.0000015)
-            self.total_cost += cost
-            print(f"🟢 Cost this call: ${cost:.6f}, Total: ${self.total_cost:.6f}")
-
-            self.store_memory(user_id, message, bot_response)
-            final_response = emotion_handler.apply_emotion(bot_response, detected_emotion)
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🟢 Final response: {final_response[:50]}...")
-            return final_response
-        except openai.error.OpenAIError as e:
-            print(f"❌ OpenAI API error: {e}")
-            return "Oops, sexy… got a lil flustered there!"
-        
+    def get_user_preferences(self, user_id):
+        return self.user_memory.get(user_id, {}).get("preferences", {
+            "loves": [],
+            "dislikes": [],
+            "interests": []
+        })
 
 # if __name__ == "__main__":
 #     chatbot = EllaChatbot()
