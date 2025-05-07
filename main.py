@@ -27,6 +27,7 @@ import db
 from chatbot import EllaChatbot
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+import traceback
 
 app = FastAPI(title="Chatbot API")
 chatbot = EllaChatbot()
@@ -58,11 +59,10 @@ class ChatSession(BaseModel):
     user_id: str
     messages: List[Message]
 
-# New model for Flutter app requests
+# Model for Flutter app requests
 class ChatRequest(BaseModel):
     user_id: str
     message: str
-    timestamp: Optional[datetime] = None
 
 # Health check endpoint
 @app.get("/health")
@@ -91,15 +91,19 @@ async def root():
                 "send_message": "/chat/{chat_id}/message",
                 "get_history": "/chat/{chat_id}/history",
                 "test_chat": "/chat/test",
-                "flutter_chat": "/chat"  # New endpoint for Flutter
+                "flutter_chat": "/chat"
             }
         }
     }
 
-# New endpoint for Flutter app
+# Endpoint for Flutter app
 @app.post("/chat")
 async def flutter_chat(request: ChatRequest):
     try:
+        print(f"\n=== Incoming Chat Request ===")
+        print(f"User ID: {request.user_id}")
+        print(f"Message: {request.message}")
+        
         # Create a chat session if it doesn't exist
         chat_result = db.create_chat_session(request.user_id)
         chat_id = str(chat_result.inserted_id)
@@ -111,7 +115,7 @@ async def flutter_chat(request: ChatRequest):
         db.add_message(chat_id, {
             "content": request.message,
             "is_user": True,
-            "timestamp": request.timestamp or datetime.utcnow()
+            "timestamp": datetime.utcnow()
         })
         
         db.add_message(chat_id, {
@@ -121,15 +125,28 @@ async def flutter_chat(request: ChatRequest):
             "timestamp": datetime.utcnow()
         })
         
-        return {
+        response_data = {
             "status": "success",
+            "response": bot_response,  # Changed to match Flutter app's expected format
             "chat_id": chat_id,
-            "user_message": request.message,
-            "bot_response": bot_response,
             "timestamp": datetime.utcnow().isoformat()
         }
+        
+        print(f"\n=== Sending Response ===")
+        print(f"Response: {response_data}")
+        return response_data
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"\n=== Error in /chat endpoint ===")
+        print(f"Error: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": str(e),
+                "message": "An error occurred while processing your request"
+            }
+        )
 
 # Test chat endpoint
 @app.post("/chat/test")
