@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 from dotenv import load_dotenv
 import time
+import certifi
 
 load_dotenv()
 
@@ -15,7 +16,15 @@ def get_mongodb_client(max_retries=3, retry_delay=1):
     
     for attempt in range(max_retries):
         try:
-            client = MongoClient(MONGODB_URL, serverSelectionTimeoutMS=5000)
+            # Configure MongoDB client with SSL/TLS settings
+            client = MongoClient(
+                MONGODB_URL,
+                tls=True,
+                tlsCAFile=certifi.where(),
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=5000,
+                socketTimeoutMS=5000
+            )
             # Test the connection
             client.admin.command('ping')
             print("🟢 Successfully connected to MongoDB!")
