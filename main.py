@@ -58,6 +58,12 @@ class ChatSession(BaseModel):
     user_id: str
     messages: List[Message]
 
+# New model for Flutter app requests
+class ChatRequest(BaseModel):
+    user_id: str
+    message: str
+    timestamp: Optional[datetime] = None
+
 # Health check endpoint
 @app.get("/health")
 async def health_check():
@@ -84,10 +90,46 @@ async def root():
                 "create_session": "/chat/{user_id}",
                 "send_message": "/chat/{chat_id}/message",
                 "get_history": "/chat/{chat_id}/history",
-                "test_chat": "/chat/test"  # New test endpoint
+                "test_chat": "/chat/test",
+                "flutter_chat": "/chat"  # New endpoint for Flutter
             }
         }
     }
+
+# New endpoint for Flutter app
+@app.post("/chat")
+async def flutter_chat(request: ChatRequest):
+    try:
+        # Create a chat session if it doesn't exist
+        chat_result = db.create_chat_session(request.user_id)
+        chat_id = str(chat_result.inserted_id)
+        
+        # Get chatbot response
+        bot_response = chatbot.get_response(chat_id, request.message)
+        
+        # Store messages
+        db.add_message(chat_id, {
+            "content": request.message,
+            "is_user": True,
+            "timestamp": request.timestamp or datetime.utcnow()
+        })
+        
+        db.add_message(chat_id, {
+            "content": bot_response,
+            "is_user": False,
+            "emotion": chatbot.emotion_handler.detect_emotion(bot_response),
+            "timestamp": datetime.utcnow()
+        })
+        
+        return {
+            "status": "success",
+            "chat_id": chat_id,
+            "user_message": request.message,
+            "bot_response": bot_response,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Test chat endpoint
 @app.post("/chat/test")
