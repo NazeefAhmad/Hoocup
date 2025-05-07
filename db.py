@@ -5,7 +5,6 @@ import os
 from dotenv import load_dotenv
 import time
 import certifi
-import ssl
 
 load_dotenv()
 
@@ -25,8 +24,7 @@ def get_mongodb_client(max_retries=3, retry_delay=1):
                 tlsCAFile=certifi.where(),
                 serverSelectionTimeoutMS=10000,
                 connectTimeoutMS=10000,
-                socketTimeoutMS=10000,
-                ssl_cert_reqs=ssl.CERT_NONE  # Only for development
+                socketTimeoutMS=10000
             )
             # Test the connection
             client.admin.command('ping')
