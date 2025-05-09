@@ -28,9 +28,14 @@ from chatbot import EllaChatbot
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import traceback
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Chatbot API")
-chatbot = EllaChatbot()
+chatbot = None  # Will be initialized in startup event
 
 # Add CORS middleware
 app.add_middleware(
@@ -40,6 +45,20 @@ app.add_middleware(
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
 )
+
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    try:
+        # Initialize database
+        await db.startup_db()
+        # Initialize chatbot
+        global chatbot
+        chatbot = EllaChatbot()
+        logger.info("Application startup completed successfully")
+    except Exception as e:
+        logger.error(f"Startup failed: {str(e)}")
+        raise
 
 # Pydantic models for request/response
 class UserCreate(BaseModel):
@@ -99,52 +118,44 @@ async def root():
 # Endpoint for Flutter app
 @app.post("/chat")
 async def flutter_chat(request: ChatRequest):
+    """Handle chat requests from Flutter app"""
     try:
-        print(f"\n=== Incoming Chat Request ===")
-        print(f"User ID: {request.user_id}")
-        print(f"Message: {request.message}")
+        logging.info(f"Processing chat request for user {request.user_id}")
         
-        # Create a chat session if it doesn't exist
-        chat_result = db.create_chat_session(request.user_id)
-        chat_id = str(chat_result.inserted_id)
+        # Create or get chat session
+        try:
+            session_id = await db.create_chat_session(request.user_id)
+        except Exception as e:
+            if "duplicate key error" in str(e):
+                # If session already exists, get the existing session
+                chat = await db.get_chat_session(request.user_id)
+                session_id = chat["session_id"]
+            else:
+                raise
+        
+        # Add user message to chat
+        await db.add_message(session_id, request.user_id, request.message, "user")
         
         # Get chatbot response
-        bot_response = chatbot.get_response(chat_id, request.message)
+        if not chatbot:
+            raise Exception("Chatbot not initialized")
+            
+        response = chatbot.get_response(request.message, request.user_id)
         
-        # Store messages
-        db.add_message(chat_id, {
-            "content": request.message,
-            "is_user": True,
-            "timestamp": datetime.utcnow()
-        })
+        # Add bot response to chat
+        await db.add_message(session_id, request.user_id, response, "assistant")
         
-        db.add_message(chat_id, {
-            "content": bot_response,
-            "is_user": False,
-            "emotion": chatbot.emotion_handler.detect_emotion(bot_response),
-            "timestamp": datetime.utcnow()
-        })
-        
-        response_data = {
-            "status": "success",
-            "response": bot_response,  # Changed to match Flutter app's expected format
-            "chat_id": chat_id,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-        print(f"\n=== Sending Response ===")
-        print(f"Response: {response_data}")
-        return response_data
+        logging.info(f"Chat response sent for user {request.user_id}")
+        return {"response": response}
         
     except Exception as e:
-        print(f"\n=== Error in /chat endpoint ===")
-        print(f"Error: {str(e)}")
-        print(f"Traceback: {traceback.format_exc()}")
+        logging.error(f"Error in /chat endpoint: {str(e)}")
+        logging.error(traceback.format_exc())
         raise HTTPException(
             status_code=500,
             detail={
-                "error": str(e),
-                "message": "An error occurred while processing your request"
+                "message": "An error occurred while processing your request",
+                "error": str(e)
             }
         )
 
@@ -152,10 +163,14 @@ async def flutter_chat(request: ChatRequest):
 @app.post("/chat/test")
 async def test_chat(message: Message):
     try:
+        if not chatbot:
+            raise HTTPException(status_code=500, detail="Chatbot not initialized")
+            
         # Create a test user if not exists
         test_user_id = "test-user-123"
-        if not db.get_user(test_user_id):
-            db.create_user({
+        user = await db.get_user(test_user_id)
+        if not user:
+            await db.create_user({
                 "name": "Test User",
                 "email": "test@example.com",
                 "phone": "1234567890",
@@ -165,15 +180,15 @@ async def test_chat(message: Message):
             })
         
         # Create a chat session
-        chat_result = db.create_chat_session(test_user_id)
+        chat_result = await db.create_chat_session(test_user_id)
         chat_id = str(chat_result.inserted_id)
         
         # Get chatbot response
         bot_response = chatbot.get_response(chat_id, message.content)
         
         # Store messages
-        db.add_message(chat_id, message.dict())
-        db.add_message(chat_id, {
+        await db.add_message(chat_id, message.dict())
+        await db.add_message(chat_id, {
             "content": bot_response,
             "is_user": False,
             "emotion": chatbot.emotion_handler.detect_emotion(bot_response)
@@ -185,41 +200,51 @@ async def test_chat(message: Message):
             "bot_response": bot_response
         }
     except Exception as e:
+        logger.error(f"Error in test chat: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # User endpoints
 @app.post("/users/")
 async def create_user(user: UserCreate):
     try:
-        result = db.create_user(user.dict())
+        result = await db.create_user(user.dict())
         return {"user_id": str(result.inserted_id)}
     except Exception as e:
+        logger.error(f"Error creating user: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/users/{user_id}")
 async def get_user(user_id: str):
-    user = db.get_user(user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user
+    try:
+        user = await db.get_user(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return user
+    except Exception as e:
+        logger.error(f"Error getting user: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Chat endpoints
 @app.post("/chat/{user_id}")
 async def create_chat(user_id: str):
     try:
-        result = db.create_chat_session(user_id)
+        result = await db.create_chat_session(user_id)
         return {"chat_id": str(result.inserted_id)}
     except Exception as e:
+        logger.error(f"Error creating chat: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/chat/{chat_id}/message")
 async def send_message(chat_id: str, message: Message):
     try:
+        if not chatbot:
+            raise HTTPException(status_code=500, detail="Chatbot not initialized")
+            
         # Get chatbot response
         bot_response = chatbot.get_response(chat_id, message.content)
         
         # Store user message
-        db.add_message(chat_id, message.dict())
+        await db.add_message(chat_id, message.dict())
         
         # Store bot response
         bot_message = Message(
@@ -227,15 +252,20 @@ async def send_message(chat_id: str, message: Message):
             is_user=False,
             emotion=chatbot.emotion_handler.detect_emotion(bot_response)
         )
-        db.add_message(chat_id, bot_message.dict())
+        await db.add_message(chat_id, bot_message.dict())
         
         return {"response": bot_response}
     except Exception as e:
+        logger.error(f"Error sending message: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/chat/{chat_id}/history")
 async def get_chat_history(chat_id: str, limit: int = 50):
-    history = db.get_chat_history(chat_id, limit)
-    if not history:
-        raise HTTPException(status_code=404, detail="Chat history not found")
-    return history
+    try:
+        history = await db.get_chat_history(chat_id, limit)
+        if not history:
+            raise HTTPException(status_code=404, detail="Chat history not found")
+        return history
+    except Exception as e:
+        logger.error(f"Error getting chat history: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
