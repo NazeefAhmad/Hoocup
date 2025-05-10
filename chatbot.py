@@ -34,6 +34,7 @@ class EllaChatbot:
         self.user_memory = {}
         self.total_cost = 0
         self.response_cache = {}
+        self.emotion_handler = emotion_handler  # Add emotion handler to instance
         print("🟢 Chatbot instance created")
 
         if self.index_name not in pc.list_indexes().names():
@@ -273,7 +274,7 @@ class EllaChatbot:
             print(f"🔄 Using cached response")
             return self.response_cache[cache_key]
 
-        detected_emotion = emotion_handler.detect_emotion(message)
+        detected_emotion = self.emotion_handler.detect_emotion(message)
         print(f"🟢 Detected emotion: {detected_emotion}")
         memory = self.retrieve_memory(user_id, message)
         history = memory["history"]
@@ -344,10 +345,92 @@ class EllaChatbot:
             print(f"🟢 Cost this call: ${cost:.6f}, Total: ${self.total_cost:.6f}")
 
             self.store_memory(user_id, message, bot_response)
-            final_response = emotion_handler.apply_emotion(bot_response, detected_emotion)
+            final_response = self.emotion_handler.apply_emotion(bot_response, detected_emotion)
             print(f"✅ Final response: {final_response[:50]}...")
             return final_response
 
         except Exception as e:
             print(f"❌ OpenAI API error: {e}")
             return f"Oops{name_ref}… got a lil flustered there!"
+
+    def get_average_response_time(self):
+        """Calculate average response time across all requests"""
+        if not hasattr(self, 'response_times'):
+            return 0
+        return sum(self.response_times) / len(self.response_times) if self.response_times else 0
+
+    def get_user_metrics(self, user_id):
+        """Get metrics for a specific user"""
+        if user_id not in self.user_memory:
+            return None
+            
+        user_data = self.user_memory[user_id]
+        return {
+            "name": user_data.get("name", ""),
+            "preferences": user_data.get("preferences", {}),
+            "total_interactions": len(user_data.get("interactions", [])),
+            "last_active": user_data.get("last_active", None)
+        }
+
+    def refresh_user_memory(self, user_id):
+        """Refresh user memory and preferences"""
+        if user_id in self.user_memory:
+            # Re-embed recent messages
+            recent_messages = self.user_memory[user_id].get("recent_messages", [])
+            for message in recent_messages:
+                self.embed_text(message)
+            # Update last refresh time
+            self.user_memory[user_id]["last_refresh"] = time.time()
+
+    def clear_user_memory(self, user_id):
+        """Clear all memory for a user"""
+        if user_id in self.user_memory:
+            del self.user_memory[user_id]
+            # Also clear from Pinecone
+            self.index.delete(filter={"user_id": user_id})
+
+    def export_user_data(self, user_id):
+        """Export all data for a user"""
+        if user_id not in self.user_memory:
+            return None
+            
+        user_data = self.user_memory[user_id].copy()
+        # Get messages from Pinecone
+        messages = self.index.query(
+            vector=[0] * 1536,  # Dummy vector
+            filter={"user_id": user_id},
+            top_k=1000,
+            include_metadata=True
+        )
+        user_data["messages"] = messages
+        return user_data
+
+    def get_user_sessions(self, user_id):
+        """Get all sessions for a user"""
+        if user_id not in self.user_memory:
+            return []
+            
+        # Query Pinecone for all sessions
+        sessions = self.index.query(
+            vector=[0] * 1536,  # Dummy vector
+            filter={"user_id": user_id},
+            top_k=1000,
+            include_metadata=True
+        )
+        return sessions
+
+    def delete_user_session(self, user_id, session_id):
+        """Delete a specific session for a user"""
+        # Delete from Pinecone
+        self.index.delete(filter={
+            "user_id": user_id,
+            "session_id": session_id
+        })
+
+    def reset(self):
+        """Reset the chatbot state"""
+        self.user_memory = {}
+        self.response_cache = {}
+        self.total_cost = 0
+        if hasattr(self, 'response_times'):
+            self.response_times = []

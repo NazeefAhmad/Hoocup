@@ -101,6 +101,18 @@ async def create_user(user_data):
     try:
         collections = get_collections()
         user_data["created_at"] = datetime.utcnow()
+        user_data["last_active"] = datetime.utcnow()
+        
+        # Ensure required fields
+        if "deviceId" not in user_data:
+            raise ValueError("deviceId is required")
+            
+        # Set default values if not provided
+        if "name" not in user_data:
+            user_data["name"] = "Guest"
+        if "email" not in user_data:
+            user_data["email"] = f"guest-{user_data['deviceId']}@placeholder.com"
+            
         result = await collections["users"].insert_one(user_data)
         logger.info(f"Created user with ID: {result.inserted_id}")
         return result
@@ -209,4 +221,26 @@ async def get_chat_session(user_id: str):
         return chat
     except Exception as e:
         logging.error(f"Error getting chat session: {str(e)}")
+        raise
+
+async def get_user_by_device_id(device_id):
+    try:
+        collections = get_collections()
+        return await collections["users"].find_one({"deviceId": device_id})
+    except Exception as e:
+        logger.error(f"Error getting user by device ID: {str(e)}")
+        raise
+
+async def update_user_by_device_id(device_id, update_data):
+    try:
+        collections = get_collections()
+        update_data["last_active"] = datetime.utcnow()
+        result = await collections["users"].update_one(
+            {"deviceId": device_id},
+            {"$set": update_data}
+        )
+        logger.info(f"Updated user with device ID: {device_id}")
+        return result
+    except Exception as e:
+        logger.error(f"Error updating user: {str(e)}")
         raise 
